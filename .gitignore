@@ -1,0 +1,5 @@
+pineapple/node_modules/
+pineapple/dist/
+
+.DS_Store
+Thumbs.db
