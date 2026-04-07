@@ -12,6 +12,7 @@ const INITIAL_SAVED_WORD_COUNT = 10;
 const DAILY_WORD_TOTAL = 3;
 const REMIND_SAVED_TOTAL = 7;
 const REMIND_TOTAL = 10;
+const EXCLUDED_SEEDED_WORDS = ["Marvel", "Balance"];
 const TAB_CONFIG = [
   { id: "today", label: "Today's Progress" },
   { id: "saved", label: "Saved Words" },
@@ -126,25 +127,63 @@ function buildChoices(answerCard, distractorPool) {
   return shuffleArray([answerCard.word, ...distractors.map((item) => item.word)]);
 }
 
-function getStoredName() {
-  localStorage.setItem("pineapple-user-name", "Yubin");
-  return "Yubin";
-}
-
 function getInitialSavedWords() {
+  const fallback = fetchRandomWordCards(INITIAL_SAVED_WORD_COUNT, EXCLUDED_SEEDED_WORDS);
+
   try {
     const raw = localStorage.getItem("pineapple-saved-words");
-    return raw ? JSON.parse(raw) : [];
+    if (!raw) return fallback;
+
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return fallback;
+
+    const sanitized = parsed.filter(
+      (card) =>
+        card &&
+        typeof card.word === "string" &&
+        typeof card.phonetic === "string" &&
+        typeof card.definition === "string" &&
+        typeof card.example === "string" &&
+        typeof card.audio === "string",
+    );
+
+    return mergeUniqueWords([], sanitized);
+
+    return fallback;
   } catch {
-    return [];
+    return fallback;
   }
 }
 
 function getInitialStreak() {
   const today = new Date().toDateString();
-  const reset = { count: 7, lastVisit: today };
-  localStorage.setItem("pineapple-streak", JSON.stringify(reset));
-  return reset;
+  const fallback = { count: 7, lastVisit: today };
+
+  try {
+    const raw = localStorage.getItem("pineapple-streak");
+    if (!raw) return fallback;
+
+    const parsed = JSON.parse(raw);
+    if (typeof parsed?.count !== "number" || typeof parsed?.lastVisit !== "string") {
+      return fallback;
+    }
+
+    return parsed;
+  } catch {
+    return fallback;
+  }
+}
+
+function completeDailyStreak(previous) {
+  const today = new Date().toDateString();
+  if (previous?.lastVisit === today) {
+    return previous;
+  }
+
+  return {
+    count: typeof previous?.count === "number" ? previous.count + 1 : 8,
+    lastVisit: today,
+  };
 }
 
 function buildLeaderboard(userName, streakCount) {
@@ -310,7 +349,6 @@ function QuizCard({
                       </Button>
                     ))}
                   </div>
-                  {!selectedChoice ? <p className="text-sm text-muted-foreground">Choose the correct word to reveal pronunciation.</p> : null}
                   {!unlocked && selectedWrongDefinition ? (
                     <div className="rounded-xl border border-red-300/80 bg-white/20 px-3 py-3 text-sm text-red-700 backdrop-blur-md">
                       <p className="font-semibold">Meaning of "{selectedChoice}"</p>
@@ -348,7 +386,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState("today");
   const [savedWords, setSavedWords] = useState(getInitialSavedWords);
   const [streak, setStreak] = useState(getInitialStreak);
-  const [userName] = useState(getStoredName);
+  const userName = "Yubin";
   const [viewMode, setViewMode] = useState("home");
   const [showCongrats, setShowCongrats] = useState(false);
   const [remindResultsOpen, setRemindResultsOpen] = useState(false);
@@ -366,23 +404,6 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem("pineapple-streak", JSON.stringify(streak));
   }, [streak]);
-
-  useEffect(() => {
-    localStorage.setItem("pineapple-user-name", userName);
-  }, [userName]);
-
-  useEffect(() => {
-    const uniqueSaved = mergeUniqueWords([], savedWords);
-    if (uniqueSaved.length >= INITIAL_SAVED_WORD_COUNT) {
-      if (uniqueSaved.length !== savedWords.length) setSavedWords(uniqueSaved);
-      return;
-    }
-
-    const seededWords = mergeUniqueWords(uniqueSaved, fetchRandomWordCards(INITIAL_SAVED_WORD_COUNT - uniqueSaved.length, uniqueSaved.map((card) => card.word)));
-    if (seededWords.length !== savedWords.length) {
-      setSavedWords(seededWords);
-    }
-  }, [savedWords]);
 
   const progress = useMemo(() => getProgressState(todayQuiz.completed), [todayQuiz.completed]);
   const leaderboard = useMemo(() => buildLeaderboard(userName, streak.count), [userName, streak.count]);
@@ -423,6 +444,11 @@ export default function App() {
       const withoutDuplicate = previous.filter((item) => normalizeWord(item.word) !== normalizeWord(card.word));
       return [card, ...withoutDuplicate];
     });
+  }
+
+  function handleUnsaveWord(word) {
+    if (!word) return;
+    setSavedWords((previous) => previous.filter((item) => normalizeWord(item.word) !== normalizeWord(word)));
   }
 
   function getChoicePool(excludedWords = []) {
@@ -495,12 +521,12 @@ export default function App() {
   }
 
   function handleNextTodayWord() {
-    if (!todayQuiz.unlocked) return;
+    if (!todayQuiz.showBack) return;
 
     const nextCompleted = Math.min(todayQuiz.completed + 1, DAILY_WORD_TOTAL);
 
     if (nextCompleted === DAILY_WORD_TOTAL) {
-      setStreak((previous) => ({ ...previous, count: previous.count + 1 }));
+      setStreak((previous) => completeDailyStreak(previous));
       setTodayQuiz((previous) => ({
         ...previous,
         completed: nextCompleted,
@@ -592,7 +618,7 @@ export default function App() {
   }
 
   function handleNextRemindWord() {
-    if (!remindQuiz.unlocked) return;
+    if (!remindQuiz.showBack) return;
 
     const nextIndex = remindQuiz.index + 1;
     if (nextIndex >= remindWords.length) {
@@ -607,12 +633,12 @@ export default function App() {
 
   return (
     <main
-      className="grid h-screen overflow-hidden place-items-center bg-cover bg-center bg-no-repeat px-3 py-4 sm:px-5 sm:py-6 lg:px-10 lg:py-10"
+      className="grid min-h-screen overflow-y-auto bg-cover bg-center bg-no-repeat px-2 py-3 sm:px-5 sm:py-6 lg:h-screen lg:overflow-hidden lg:place-items-center lg:px-10 lg:py-10"
       style={{ backgroundImage: `linear-gradient(135deg, rgba(243, 240, 255, 0.58), rgba(235, 244, 255, 0.7)), url(${backgroundImage})` }}
     >
-      <div className="mx-auto flex h-[80vh] max-h-[722px] w-full items-center justify-center lg:max-w-[1200px]">
+      <div className="mx-auto flex min-h-[88vh] w-full items-start justify-center lg:h-[80vh] lg:min-h-0 lg:max-h-[722px] lg:items-center lg:max-w-[1200px]">
         <Card
-          className="relative h-[80vh] max-h-[722px] w-full overflow-hidden border-white/30 bg-white/20 shadow-2xl backdrop-blur-2xl"
+          className="relative min-h-[88vh] w-full border-white/30 bg-white/20 shadow-2xl backdrop-blur-2xl lg:h-[80vh] lg:min-h-0 lg:max-h-[722px] lg:overflow-hidden"
           style={{
             boxShadow: "0 24px 80px rgba(99, 102, 241, 0.18)",
           }}
@@ -638,7 +664,7 @@ export default function App() {
             className="pointer-events-none absolute -left-16 top-10 h-48 w-48 rounded-full blur-3xl"
             style={{ background: "rgba(255,255,255,0.1)" }}
           />
-          <CardContent className="relative z-10 p-4 sm:p-6 lg:flex lg:h-full lg:flex-col lg:p-10">
+          <CardContent className="relative z-10 flex min-h-[88vh] flex-col justify-center p-3 sm:p-6 lg:h-full lg:min-h-0 lg:justify-start lg:p-10">
             <header className="border-b border-white/30 pb-5 lg:pb-7">
               <div className="flex flex-col gap-4 lg:mx-auto lg:w-full">
                 <div>
@@ -668,7 +694,7 @@ export default function App() {
                   </TabsTrigger>
                 ))}
               </TabsList>
-              <TabsContent value="today" className="overflow-hidden lg:min-h-0 lg:flex-1">
+              <TabsContent value="today" className="lg:min-h-0 lg:flex-1 lg:overflow-hidden">
                 {viewMode === "home" ? (
                   <div className="space-y-5 lg:mx-auto lg:flex lg:h-full lg:w-full lg:flex-col lg:justify-center lg:gap-8 lg:space-y-0">
                     <div className="w-full">
@@ -875,9 +901,14 @@ export default function App() {
                                   <h3 className="mt-3 text-xl font-bold">{card.word}</h3>
                                   <p className="text-sm text-muted-foreground">{card.phonetic}</p>
                                 </div>
-                                <Button variant="outline" size="icon" onClick={() => handlePlayAudio(card)}>
-                                  <Volume2 className="h-4 w-4" />
-                                </Button>
+                                <div className="flex items-center gap-2">
+                                  <Button variant="outline" size="icon" onClick={() => handlePlayAudio(card)}>
+                                    <Volume2 className="h-4 w-4" />
+                                  </Button>
+                                  <Button variant="ghost" size="sm" onClick={() => handleUnsaveWord(card.word)}>
+                                    Remove
+                                  </Button>
+                                </div>
                               </div>
                               <p className="mt-4 text-sm leading-6 text-slate-600">{card.definition}</p>
                               <p className="mt-3 text-sm italic leading-6 text-slate-700">{card.example}</p>
